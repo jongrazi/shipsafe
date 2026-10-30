@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[codz]
+.pytest_cache/
+.venv/
+
+# Secrets: never commit
+.env
+
+# Local runtime data, including sandbox buyer details
+data/

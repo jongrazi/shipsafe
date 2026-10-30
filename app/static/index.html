@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShipSafe demo store</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f6f6f4; color: #1f2328; }
+    main { max-width: 26rem; margin: 3rem auto; padding: 0 1rem; }
+    .note { font-size: .875rem; color: #5a6068; }
+    .item { background: #fff; border: 1px solid #deded9; border-radius: .5rem; padding: 1.25rem; }
+    .item h2 { margin: 0 0 .25rem; font-size: 1.125rem; }
+    .price { font-size: 1.5rem; font-weight: 600; margin: 0 0 1rem; }
+    #status { min-height: 1.5rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ShipSafe demo store</h1>
+    <p class="note">A test shop on the PayPal sandbox. No real money moves.</p>
+    <section class="item">
+      <h2 id="name"></h2>
+      <p class="price" id="price"></p>
+      <div id="paypal-button"></div>
+    </section>
+    <p id="status" role="status"></p>
+  </main>
+  <script>
+    const statusLine = document.getElementById("status");
+
+    async function postJson(url) {
+      const response = await fetch(url, { method: "POST" });
+      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      return response.json();
+    }
+
+    function renderButton() {
+      paypal.Buttons({
+        createOrder: async () => (await postJson("/api/orders")).id,
+        onApprove: async ({ orderID }) => {
+          const result = await postJson(`/api/orders/${orderID}/capture`);
+          statusLine.textContent = `Order ${orderID}: ${result.status}`;
+        },
+        onError: () => { statusLine.textContent = "The payment did not go through."; },
+      }).render("#paypal-button");
+    }
+
+    async function start() {
+      const { client_id: clientId, item } = await (await fetch("/api/config")).json();
+      document.getElementById("name").textContent = item.name;
+      document.getElementById("price").textContent = `$${item.price}`;
+      if (!clientId) {
+        statusLine.textContent = "PAYPAL_CLIENT_ID is not set.";
+        return;
+      }
+      const sdk = document.createElement("script");
+      sdk.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(clientId)}&currency=USD&intent=capture`;
+      sdk.onload = renderButton;
+      sdk.onerror = () => { statusLine.textContent = "PayPal could not be loaded."; };
+      document.head.appendChild(sdk);
+    }
+
+    start();
+  </script>
+</body>
+</html>

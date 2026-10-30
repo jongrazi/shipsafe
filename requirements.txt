@@ -1,0 +1,8 @@
+# ShipSafe runtime dependencies (Python >= 3.10)
+fastapi>=0.115.0         # web app and webhook endpoint
+uvicorn>=0.30.0          # server
+requests>=2.31.0         # PayPal REST calls
+python-dotenv>=1.0.0     # loads .env
+cryptography>=42.0.0     # checks PayPal webhook signatures
+pytest>=8.0              # tests
+httpx2                   # FastAPI test client
