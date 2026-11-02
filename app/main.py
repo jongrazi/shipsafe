@@ -1,14 +1,16 @@
 """
 ShipSafe web app: the sandbox demo store and the PayPal webhook.
 
-The review itself is not built yet. For now each paid order is reported field by field,
-which settles what the review can rely on (see field_report.py).
+Each paid order is stored and its risk signals are computed. The AI review is not built
+yet. Field reports stay in the log until the webhook path has been confirmed on PayPal.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import requests
@@ -16,20 +18,32 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
-from . import config, field_report, webhooks
+from . import config, field_report, orders, signals, webhooks
 from .paypal import PayPal, PayPalError
+from .store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("shipsafe")
 
 STATIC_DIR = Path(__file__).parent / "static"
-ORDER_ID = re.compile(r"^[A-Z0-9]{10,40}$")
 EVENT_ID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 # The price lives on the server, so a buyer's browser can't change it.
 DEMO_ITEM = {"name": "Trail Backpack", "sku": "DEMO-001", "price": "149.00"}
 
-app = FastAPI(title="ShipSafe")
 paypal = PayPal(config.CLIENT_ID, config.CLIENT_SECRET)
+store: Store | None = None  # opened at startup
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    global store
+    store = Store(config.DB_PATH)
+    history = json.loads(config.SHOP_HISTORY.read_text(encoding="utf-8"))
+    log.info("shop history: %d orders added, %d stored", store.seed(history), store.count())
+    yield
+
+
+app = FastAPI(title="ShipSafe", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -58,7 +72,7 @@ def create_order() -> dict:
 
 @app.post("/api/orders/{order_id}/capture")
 def capture_order(order_id: str) -> dict:
-    if not ORDER_ID.match(order_id):
+    if not orders.PAYPAL_ID.match(order_id):
         raise HTTPException(400, "invalid order id")
     try:
         order = paypal.capture_order(order_id)
@@ -69,6 +83,7 @@ def capture_order(order_id: str) -> dict:
     field_report.save_sample(config.SAMPLES_DIR, f"capture-{order_id}", capture, order)
     log.info("field report (capture response) %s: %s", order_id,
              json.dumps(field_report.build(capture, order)))
+    record_order(capture, order, "capture response")
     return {"status": order.get("status")}
 
 
@@ -95,14 +110,14 @@ def report_capture(event: dict) -> None:
     """Runs after the webhook has been answered. PayPal may deliver an event more than once."""
     event_id = event.get("id", "")
     capture_id = (event.get("resource") or {}).get("id", "")
-    if not EVENT_ID.match(event_id) or not ORDER_ID.match(capture_id):
+    if not EVENT_ID.match(event_id) or not orders.PAYPAL_ID.match(capture_id):
         log.warning("webhook event with unusable ids ignored")
         return
     if (config.SAMPLES_DIR / f"{event_id}.json").exists():
         return
     try:
         capture = paypal.get_capture(capture_id)
-        order_id = field_report.dig(capture, "supplementary_data.related_ids.order_id")
+        order_id = orders.order_id_of_capture(capture)
         order = paypal.get_order(order_id) if order_id else {}
     except PayPalError as exc:
         log.error("report capture %s: %s", capture_id, exc)
@@ -110,3 +125,25 @@ def report_capture(event: dict) -> None:
     field_report.save_sample(config.SAMPLES_DIR, event_id, capture, order)
     log.info("field report (webhook) %s: %s", capture_id,
              json.dumps(field_report.build(capture, order)))
+    record_order(capture, order, "webhook")
+
+
+def record_order(capture: dict, order: dict, via: str) -> None:
+    """
+    Store a paid order and compute its signals, once per order: the capture response and
+    the webhook both report it. By now the buyer has paid, so a failure here is logged
+    rather than shown to them.
+    """
+    paid = orders.from_paypal(capture, order)
+    if paid is None:
+        log.warning("order not recorded (%s): not a completed payment, or fields are missing", via)
+        return
+    try:
+        if not store.add(paid):
+            return
+        found = signals.build(paid, store)
+    except sqlite3.Error as exc:
+        log.error("order %s not recorded: %s", paid.order_id, type(exc).__name__)
+        return
+    log.info("signals %s (%s): %s", paid.order_id, via,
+             json.dumps({signal.name: signal.level for signal in found}))

@@ -13,4 +13,7 @@ CLIENT_ID = os.environ.get("PAYPAL_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("PAYPAL_CLIENT_SECRET", "")
 WEBHOOK_ID = os.environ.get("PAYPAL_WEBHOOK_ID", "")
 
-SAMPLES_DIR = Path(__file__).resolve().parent.parent / "data" / "samples"
+ROOT = Path(__file__).resolve().parent.parent
+SAMPLES_DIR = ROOT / "data" / "samples"
+DB_PATH = ROOT / "data" / "shipsafe.db"
+SHOP_HISTORY = ROOT / "fixtures" / "shop_history.json"

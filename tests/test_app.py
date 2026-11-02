@@ -2,32 +2,24 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import config, field_report, main, webhooks
 from app.paypal import PayPalError
+from app.store import Store
+from tests.helpers import CAPTURE, ORDER
 
-BUYER_EMAIL = "buyer@example.com"
-CAPTURE = {
-    "id": "CAPTURE12345",
-    "status": "COMPLETED",
-    "seller_protection": {"status": "ELIGIBLE", "dispute_categories": ["ITEM_NOT_RECEIVED"]},
-    "supplementary_data": {"related_ids": {"order_id": "ORDER12345A"}},
-}
-ORDER = {
-    "id": "ORDER12345A",
-    "status": "COMPLETED",
-    "payment_source": {"paypal": {"account_status": "VERIFIED", "email_address": BUYER_EMAIL}},
-    "purchase_units": [{"payments": {"captures": [CAPTURE]}}],
-}
+BUYER_EMAIL = ORDER["payer"]["email_address"]
 EVENT = {"id": "WH-1", "event_type": "PAYMENT.CAPTURE.COMPLETED", "resource": {"id": "CAPTURE12345"}}
 
 
 class FakePayPal:
     def __init__(self):
         self.created: list[dict] = []
+        self.capture = CAPTURE
         self.capture_calls = 0
         self.fail = False
 
@@ -43,7 +35,7 @@ class FakePayPal:
     def get_capture(self, capture_id):
         self._maybe_fail()
         self.capture_calls += 1
-        return CAPTURE
+        return self.capture
 
     def get_order(self, order_id):
         return ORDER
@@ -57,7 +49,8 @@ class FakePayPal:
 def fake(monkeypatch, tmp_path):
     fake = FakePayPal()
     monkeypatch.setattr(main, "paypal", fake)
-    monkeypatch.setattr(config, "SAMPLES_DIR", tmp_path)
+    monkeypatch.setattr(main, "store", Store(tmp_path / "test.db"))
+    monkeypatch.setattr(config, "SAMPLES_DIR", tmp_path / "samples")
     return fake
 
 
@@ -94,6 +87,16 @@ def test_report_keeps_personal_details_out():
     assert BUYER_EMAIL not in json.dumps(report)
 
 
+def test_startup_loads_shop_history_once(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "store", None)
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "startup.db")
+    with TestClient(main.app):
+        first_count = main.store.count()
+    with TestClient(main.app):
+        assert main.store.count() == first_count
+    assert first_count > 100
+
+
 def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
@@ -119,6 +122,19 @@ def test_capture_saves_sample_and_returns_only_the_status(client, fake):
     response = client.post("/api/orders/ORDER12345A/capture")
     assert response.json() == {"status": "COMPLETED"}
     assert (config.SAMPLES_DIR / "capture-ORDER12345A.json").exists()
+
+
+def test_capture_stores_the_order(client, fake):
+    client.post("/api/orders/ORDER12345A/capture")
+    assert main.store.get("ORDER12345A").amount_cents == 14900
+
+
+def test_store_failure_does_not_fail_a_buyer_who_has_paid(client, fake, monkeypatch):
+    def fail(_order):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(main.store, "add", fail)
+    assert client.post("/api/orders/ORDER12345A/capture").status_code == 200
 
 
 def test_capture_refuses_a_malformed_order_id(client):
@@ -151,6 +167,25 @@ def test_capture_event_is_reported(client, fake, genuine_webhooks):
     assert sample["order"]["id"] == "ORDER12345A"
 
 
+def test_capture_event_stores_the_order(client, fake, genuine_webhooks):
+    post_event(client)
+    assert main.store.get("ORDER12345A") is not None
+
+
+def test_capture_event_finds_the_order_through_the_up_link(client, fake, genuine_webhooks):
+    fake.capture = {k: v for k, v in CAPTURE.items() if k != "supplementary_data"}
+    fake.capture["links"] = [
+        {"rel": "up", "href": "https://api.sandbox.paypal.com/v2/checkout/orders/ORDER12345A"}]
+    post_event(client)
+    assert main.store.get("ORDER12345A") is not None
+
+
+def test_order_reported_by_both_paths_is_stored_once(client, fake, genuine_webhooks):
+    client.post("/api/orders/ORDER12345A/capture")
+    post_event(client)
+    assert main.store.count() == 1
+
+
 def test_repeated_event_is_reported_once(client, fake, genuine_webhooks):
     post_event(client)
     post_event(client)
@@ -166,4 +201,4 @@ def test_other_events_are_acknowledged_and_skipped(client, fake, genuine_webhook
 def test_event_with_unsafe_ids_is_ignored(client, fake, genuine_webhooks):
     post_event(client, {**EVENT, "id": "../../evil"})
     assert fake.capture_calls == 0
-    assert list(config.SAMPLES_DIR.iterdir()) == []
+    assert not config.SAMPLES_DIR.exists()

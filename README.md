@@ -6,7 +6,9 @@ Built for the PayPal AI Hackathon. This prototype runs only on the PayPal sandbo
 
 ## Status
 
-Early setup. The demo store, PayPal order flow and verified webhook are in place, and each paid order gets a field report. The AI review is not built yet.
+Early build. The demo store, PayPal order flow and verified webhook are in place. Each paid order is stored and gets a set of rule-based risk signals. The AI review is not built yet.
+
+The shop's order history in `fixtures/shop_history.json` is synthetic, so that a new install has something to compare orders against. `scripts/make_shop_history.py` regenerates it.
 
 ## Run it locally
 
