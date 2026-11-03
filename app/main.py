@@ -30,6 +30,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("shipsafe")
 
 STATIC_DIR = Path(__file__).parent / "static"
+NO_CACHE = {"Cache-Control": "no-cache"}  # browsers check for a new version on every load
 EVENT_ID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 # Prices live on the server, so a buyer's browser can't change them. The shop's past orders
 # are $39 to $149, so the tent is an unusually large order for it.
@@ -62,12 +63,12 @@ def health() -> dict:
 
 @app.get("/")
 def storefront() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers=NO_CACHE)
 
 
 @app.get("/seller")
 def seller_screen() -> FileResponse:
-    return FileResponse(STATIC_DIR / "seller.html")
+    return FileResponse(STATIC_DIR / "seller.html", headers=NO_CACHE)
 
 
 @app.get("/api/reviews")
@@ -107,7 +108,7 @@ def queue_entry(order: orders.PaidOrder, saved: dict) -> dict:
         "seller_protection": order.seller_protection,
         "decision": {key: decision.get(key) for key in (
             "reason", "rule_band", "model_band", "probability", "hold_above", "money_at_risk_cents")},
-        "signals": record.get("signals", []),
+        "signals": [_reworded(signal, order) for signal in record.get("signals", [])],
         "review": {
             "model": result.get("model"),
             "explanation": result.get("explanation", ""),
@@ -118,6 +119,16 @@ def queue_entry(order: orders.PaidOrder, saved: dict) -> dict:
             "looked_at": list(dict.fromkeys(looked_at)),
         },
     }
+
+
+def _reworded(signal: dict, order: orders.PaidOrder) -> dict:
+    """
+    Seller Protection depends only on the order, so its summary is rebuilt in today's wording.
+    Orders reviewed before the wording changed would otherwise show PayPal's raw codes.
+    """
+    if signal.get("name") == "seller_protection":
+        return asdict(signals.seller_protection(order))
+    return signal
 
 
 @app.get("/api/config")

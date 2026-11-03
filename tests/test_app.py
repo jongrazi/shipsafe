@@ -328,6 +328,18 @@ def test_queue_shows_a_failed_review_as_held(client, fake):
     assert entry["review"]["errors"]
 
 
+def test_queue_rewords_seller_protection_on_older_reviews(client):
+    main.store.add(make_order())
+    old = [{"name": "seller_protection", "level": "ok",
+            "summary": "Eligible for Seller Protection, covering ITEM_NOT_RECEIVED, UNAUTHORIZED_TRANSACTION."},
+           {"name": "country", "level": "ok", "summary": "Unchanged."}]
+    main.store.add_review("ORDER12345A", "ship", "low", {"signals": old})
+    [entry] = client.get("/api/reviews").json()["orders"]
+    assert entry["signals"][0]["summary"] == (
+        "Eligible for Seller Protection, covering item-not-received claims and unauthorized payments.")
+    assert entry["signals"][1] == old[1]
+
+
 def test_queue_skips_reviews_without_a_stored_order(client):
     main.store.add_review("MISSING", "ship", "low", {})
     assert client.get("/api/reviews").json()["orders"] == []
@@ -340,3 +352,8 @@ def test_queue_is_newest_first(client):
     main.store.add_review("LATERORDER1", "ship", "low", {}, now=200)
     entries = client.get("/api/reviews").json()["orders"]
     assert [e["order_id"] for e in entries] == ["LATERORDER1", "ORDER12345A"]
+
+
+def test_pages_are_never_served_stale(client):
+    for path in ("/", "/seller"):
+        assert client.get(path).headers["cache-control"] == "no-cache"

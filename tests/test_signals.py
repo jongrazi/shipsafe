@@ -42,6 +42,18 @@ def test_seller_protection_levels(store, status, expected):
     assert levels(make_order(seller_protection=status), store)["seller_protection"] == expected
 
 
+@pytest.mark.parametrize("categories, covers", [
+    (("ITEM_NOT_RECEIVED", "UNAUTHORIZED_TRANSACTION"),
+     "item-not-received claims and unauthorized payments"),
+    (("ITEM_NOT_RECEIVED",), "item-not-received claims"),
+    (("NEW_CATEGORY",), "new category"),
+    ((), "no listed categories"),
+])
+def test_seller_protection_in_plain_words(store, categories, covers):
+    found = {s.name: s for s in signals.build(make_order(protection_categories=categories), store)}
+    assert found["seller_protection"].summary == f"Eligible for Seller Protection, covering {covers}."
+
+
 @pytest.mark.parametrize("status, expected", [
     ("VERIFIED", "ok"), ("UNVERIFIED", "watch"), ("", "info"),
 ])

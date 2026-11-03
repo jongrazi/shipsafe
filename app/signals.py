@@ -38,7 +38,7 @@ def build(order: PaidOrder, store: Store) -> list[Signal]:
     buyer_history = store.buyer_orders(order)
     address_history = store.address_orders(order)
     return [
-        _seller_protection(order),
+        seller_protection(order),
         _account_status(order),
         _country(order),
         _name(order),
@@ -50,9 +50,16 @@ def build(order: PaidOrder, store: Store) -> list[Signal]:
     ]
 
 
-def _seller_protection(order: PaidOrder) -> Signal:
+PROTECTION_CATEGORIES = {
+    "ITEM_NOT_RECEIVED": "item-not-received claims",
+    "UNAUTHORIZED_TRANSACTION": "unauthorized payments",
+}
+
+
+def seller_protection(order: PaidOrder) -> Signal:
     status = order.seller_protection
-    covers = ", ".join(order.protection_categories) or "no listed categories"
+    covers = _plain_list([PROTECTION_CATEGORIES.get(category, category.replace("_", " ").lower())
+                          for category in order.protection_categories]) or "no listed categories"
     if status == "ELIGIBLE":
         return Signal("seller_protection", "ok", f"Eligible for Seller Protection, covering {covers}.")
     if status == "PARTIALLY_ELIGIBLE":
@@ -60,6 +67,11 @@ def _seller_protection(order: PaidOrder) -> Signal:
     if status == "NOT_ELIGIBLE":
         return Signal("seller_protection", "risk", "Not eligible for Seller Protection.")
     return Signal("seller_protection", "watch", "PayPal gave no Seller Protection status.")
+
+
+def _plain_list(items: list[str]) -> str:
+    """"a", "a and b", "a, b and c"."""
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + (f" and {items[-1]}" if items else "")
 
 
 def _account_status(order: PaidOrder) -> Signal:
