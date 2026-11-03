@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app import config, field_report, main, review, webhooks
 from app.paypal import PayPalError
 from app.store import Store
-from tests.helpers import CAPTURE, ORDER
+from tests.helpers import CAPTURE, ORDER, make_order
 
 BUYER_EMAIL = ORDER["payer"]["email_address"]
 EVENT = {"id": "WH-1", "event_type": "PAYMENT.CAPTURE.COMPLETED", "resource": {"id": "CAPTURE12345"}}
@@ -256,3 +256,75 @@ def test_event_with_unsafe_ids_is_ignored(client, fake, genuine_webhooks):
     post_event(client, {**EVENT, "id": "../../evil"})
     assert fake.capture_calls == 0
     assert not config.SAMPLES_DIR.exists()
+
+
+# â”€â”€ seller screen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def test_seller_screen_is_served(client):
+    response = client.get("/seller")
+    assert response.status_code == 200
+    assert "ShipSafe orders" in response.text
+
+
+def test_seller_screen_never_writes_html_from_data():
+    page = (main.STATIC_DIR / "seller.html").read_text(encoding="utf-8")
+    assert "innerHTML" not in page and "insertAdjacentHTML" not in page
+
+
+def test_queue_shows_the_decision_and_what_the_ai_checked(client, fake, monkeypatch):
+    transcript = [
+        {"role": "user", "content": "Review this order."},
+        {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "..."},
+            {"type": "tool_use", "id": "t1", "name": "get_buyer_history", "input": {}},
+            {"type": "tool_use", "id": "t2", "name": "get_shop_baseline", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "[]"}]},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t3", "name": "submit_review", "input": {}}]},
+    ]
+
+    def approve(*_args):
+        return review.Review(model="test", band="low", reasons=["First order"], explanation="Fine.",
+                             buyer_message="Hello", transcript=transcript)
+
+    monkeypatch.setattr(review, "run", approve)
+    client.post("/api/orders/ORDER12345A/capture")
+    [entry] = client.get("/api/reviews").json()["orders"]
+    assert entry["order_id"] == "ORDER12345A"
+    assert entry["action"] == "ship"
+    assert entry["amount"] == "149.00"
+    assert entry["buyer"]["email"] == "buyer@example.com"
+    assert entry["review"]["explanation"] == "Fine."
+    assert entry["review"]["looked_at"] == ["get_buyer_history", "get_shop_baseline"]
+    assert entry["review"]["buyer_message"] == ""   # only offered when contacting the buyer
+    assert "transcript" not in entry["review"]
+    assert entry["decision"]["reason"]
+
+
+def test_queue_offers_the_buyer_message_when_contacting(client):
+    main.store.add(make_order())
+    main.store.add_review("ORDER12345A", "contact_buyer", "medium",
+                          {"review": {"buyer_message": "Could you confirm your address?"}})
+    [entry] = client.get("/api/reviews").json()["orders"]
+    assert entry["review"]["buyer_message"] == "Could you confirm your address?"
+
+
+def test_queue_shows_a_failed_review_as_held(client, fake):
+    client.post("/api/orders/ORDER12345A/capture")   # no Claude client in tests
+    [entry] = client.get("/api/reviews").json()["orders"]
+    assert entry["action"] == "hold"
+    assert entry["decision"]["model_band"] is None
+    assert entry["review"]["errors"]
+
+
+def test_queue_skips_reviews_without_a_stored_order(client):
+    main.store.add_review("MISSING", "ship", "low", {})
+    assert client.get("/api/reviews").json()["orders"] == []
+
+
+def test_queue_is_newest_first(client):
+    main.store.add(make_order())
+    main.store.add(make_order(order_id="LATERORDER1", capture_id="LATERCAP1"))
+    main.store.add_review("ORDER12345A", "ship", "low", {}, now=100)
+    main.store.add_review("LATERORDER1", "ship", "low", {}, now=200)
+    entries = client.get("/api/reviews").json()["orders"]
+    assert [e["order_id"] for e in entries] == ["LATERORDER1", "ORDER12345A"]

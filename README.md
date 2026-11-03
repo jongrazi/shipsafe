@@ -6,7 +6,7 @@ Built for the PayPal AI Hackathon. This prototype runs only on the PayPal sandbo
 
 ## Status
 
-Early build. The seller screen and seller-approved actions are not built yet.
+Early build. The seller screen shows each decision and its reasons. Seller-approved actions are not built yet.
 
 ## How a review works
 
@@ -41,8 +41,9 @@ You need Python 3.10 or later and a [PayPal sandbox app](https://developer.paypa
    ```
 
 4. Open <http://localhost:8000> and buy the item with a sandbox personal account.
+5. Open <http://localhost:8000/seller> to see the order queue: each decision, the AI's explanation, the checks behind it and how the money at risk was weighed. It refreshes every 10 seconds.
 
-The server log prints a field report and the decision for the order. The full PayPal response is saved in `data/samples`, which git ignores.
+The seller screen has no login, so it is only for sandbox data. The server log prints a field report and the decision for the order. The full PayPal response is saved in `data/samples`, which git ignores.
 
 To run the AI review, add `ANTHROPIC_API_KEY` to `.env` and restart the app. Without it, every order is held for the seller. To read the latest reviews:
 

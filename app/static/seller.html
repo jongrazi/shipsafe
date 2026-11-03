@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShipSafe orders</title>
+  <style>
+    :root {
+      --bg: #f6f6f4; --panel: #fff; --line: #deded9; --text: #1f2328; --muted: #5a6068;
+      --ship: #1a7f37; --ship-bg: #dafbe1; --contact: #9a6700; --contact-bg: #fff8c5;
+      --hold: #c62828; --hold-bg: #ffebe9; --info-bg: #eef0f2;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
+    header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); background: var(--panel);
+             display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; align-items: baseline; }
+    header h1 { font-size: 1.125rem; margin: 0; }
+    .counts { display: flex; gap: 1rem; font-size: .875rem; color: var(--muted); }
+    .counts b { color: var(--text); }
+    .note { font-size: .8125rem; color: var(--muted); margin-left: auto; }
+    main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 1rem;
+           padding: 1rem 1.25rem; max-width: 80rem; margin: 0 auto; }
+    @media (max-width: 52rem) { main { grid-template-columns: minmax(0, 1fr); } }
+    section { background: var(--panel); border: 1px solid var(--line); border-radius: .5rem; min-width: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    th { text-align: left; font-weight: 500; color: var(--muted); padding: .625rem .75rem;
+         border-bottom: 1px solid var(--line); }
+    td { padding: .625rem .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover { background: #fafaf8; }
+    tbody tr[aria-selected="true"] { background: #f0f4ff; }
+    td.amount { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    th.amount { text-align: right; }
+    .sub { color: var(--muted); font-size: .8125rem; }
+    .badge { display: inline-block; padding: .125rem .5rem; border-radius: 1rem; font-size: .8125rem;
+             font-weight: 600; white-space: nowrap; }
+    .ship { color: var(--ship); background: var(--ship-bg); }
+    .contact_buyer { color: var(--contact); background: var(--contact-bg); }
+    .hold { color: var(--hold); background: var(--hold-bg); }
+    #detail { padding: 1.25rem; }
+    #detail h2 { margin: 0 0 .25rem; font-size: 1.125rem; }
+    #detail h3 { font-size: .8125rem; text-transform: uppercase; letter-spacing: .04em;
+                 color: var(--muted); margin: 1.5rem 0 .5rem; }
+    .verdict { display: flex; gap: .75rem; align-items: center; margin: 1rem 0 .5rem; }
+    .verdict .badge { font-size: 1rem; padding: .25rem .75rem; }
+    .explanation { font-size: 1rem; line-height: 1.5; margin: 0; }
+    ul { margin: 0; padding-left: 1.25rem; line-height: 1.5; }
+    .signals { list-style: none; padding: 0; }
+    .signals li { display: flex; gap: .5rem; align-items: baseline; padding: .25rem 0; font-size: .875rem; }
+    .level { font-size: .75rem; font-weight: 600; padding: 0 .375rem; border-radius: .25rem;
+             min-width: 3rem; text-align: center; flex-shrink: 0; }
+    .level-ok, .level-info { background: var(--info-bg); color: var(--muted); }
+    .level-watch { background: var(--contact-bg); color: var(--contact); }
+    .level-risk { background: var(--hold-bg); color: var(--hold); }
+    dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25rem 1rem;
+         margin: 0; font-size: .875rem; }
+    dt { color: var(--muted); }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    blockquote { margin: 0; padding: .75rem 1rem; background: var(--bg); border-radius: .375rem;
+                 white-space: pre-wrap; font-size: .9375rem; }
+    .errors { color: var(--hold); }
+    .empty { padding: 2rem 1.25rem; color: var(--muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ShipSafe orders</h1>
+    <div class="counts" id="counts"></div>
+    <span class="note" id="note">Sandbox shop. Refreshes every 10 seconds.</span>
+  </header>
+  <main>
+    <section aria-label="Orders">
+      <table>
+        <thead><tr><th>Order</th><th>Buyer</th><th class="amount">Amount</th><th>Decision</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="empty" id="empty" hidden>No orders yet. Buy something in the demo store.</p>
+    </section>
+    <section aria-label="Order detail" id="detail" aria-live="polite">
+      <p class="empty">Choose an order to see why ShipSafe decided what it did.</p>
+    </section>
+  </main>
+  <script>
+    // Every value from the server goes in with textContent: buyer-written names and the AI's
+    // text are shown as text, never run as HTML.
+    const ACTIONS = { ship: "Ship", contact_buyer: "Contact buyer", hold: "Hold" };
+    const TOOLS = {
+      get_buyer_history: "the buyer's past orders",
+      get_address_history: "past orders to this address",
+      get_shop_baseline: "what is normal for this shop",
+    };
+    const PROTECTION = {
+      ELIGIBLE: "Eligible", PARTIALLY_ELIGIBLE: "Partly eligible", NOT_ELIGIBLE: "Not eligible",
+    };
+    let orders = [];
+    let selected = null;
+
+    function el(tag, props = {}, ...children) {
+      const node = document.createElement(tag);
+      for (const [key, value] of Object.entries(props)) {
+        if (key === "class") node.className = value;
+        else node.setAttribute(key, value);
+      }
+      for (const child of children) {
+        node.append(child instanceof Node ? child : document.createTextNode(String(child ?? "")));
+      }
+      return node;
+    }
+
+    const money = (order, cents) => `$${cents === undefined ? order.amount : (cents / 100).toFixed(2)}`;
+    const percent = (p) => (p === null || p === undefined) ? "?" : `${Math.round(p * 100)}%`;
+    const when = (epoch) => new Date(epoch * 1000).toLocaleString([], {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const badge = (action) => el("span", { class: `badge ${action}` }, ACTIONS[action] || action);
+
+    function renderCounts() {
+      const counts = document.getElementById("counts");
+      counts.replaceChildren(...Object.entries(ACTIONS).map(([action, label]) =>
+        el("span", {}, el("b", {}, orders.filter(o => o.action === action).length), ` ${label.toLowerCase()}`)));
+    }
+
+    function renderRows() {
+      const rows = document.getElementById("rows");
+      rows.replaceChildren(...orders.map(order => {
+        const row = el("tr", { tabindex: "0", "aria-selected": String(order.order_id === selected) },
+          el("td", {}, order.order_id, el("div", { class: "sub" }, when(order.reviewed_at))),
+          el("td", {}, order.buyer.name, el("div", { class: "sub" }, order.ship_to.country)),
+          el("td", { class: "amount" }, money(order)),
+          el("td", {}, badge(order.action)));
+        const choose = () => { selected = order.order_id; renderRows(); renderDetail(); };
+        row.addEventListener("click", choose);
+        row.addEventListener("keydown", (event) => { if (event.key === "Enter") choose(); });
+        return row;
+      }));
+      document.getElementById("empty").hidden = orders.length > 0;
+    }
+
+    function renderDetail() {
+      const order = orders.find(o => o.order_id === selected);
+      const detail = document.getElementById("detail");
+      if (!order) return;
+      const { decision, review } = order;
+      const parts = [
+        el("h2", {}, `${money(order)} order from ${order.buyer.name}`),
+        el("div", { class: "sub" }, `${order.order_id} · ${when(order.reviewed_at)}`),
+        el("div", { class: "verdict" }, badge(order.action),
+          el("span", { class: "sub" }, `Risk ${order.band}, ${percent(decision.probability)} estimated`)),
+        el("p", {}, decision.reason),
+      ];
+
+      if (review.explanation) {
+        parts.push(el("h3", {}, "What the AI found"), el("p", { class: "explanation" }, review.explanation));
+        if (review.reasons.length) parts.push(el("ul", {}, ...review.reasons.map(r => el("li", {}, r))));
+        if (review.looked_at.length) {
+          parts.push(el("p", { class: "sub" },
+            `Checked ${review.looked_at.map(name => TOOLS[name] || name).join(", ")}. Model: ${review.model}.`));
+        }
+      }
+      if (review.errors.length) {
+        parts.push(el("h3", {}, "AI review not used"), el("p", { class: "errors" }, review.errors.join("; ")));
+      }
+      if (review.buyer_message) {
+        parts.push(el("h3", {}, "Suggested message to the buyer"), el("blockquote", {}, review.buyer_message));
+      }
+
+      parts.push(el("h3", {}, "How the decision was made"), el("dl", {},
+        el("dt", {}, "Rules said"), el("dd", {}, decision.rule_band),
+        el("dt", {}, "AI said"), el("dd", {}, decision.model_band ?? "no answer"),
+        el("dt", {}, "Money at risk"), el("dd", {},
+          `${money(order, decision.money_at_risk_cents)} after Seller Protection`),
+        el("dt", {}, "Hold above"), el("dd", {}, `${percent(decision.hold_above)} risk`)));
+
+      parts.push(el("h3", {}, "Checks"), el("ul", { class: "signals" }, ...order.signals.map(signal =>
+        el("li", {}, el("span", { class: `level level-${signal.level}` }, signal.level), signal.summary))));
+
+      parts.push(el("h3", {}, "Order"), el("dl", {},
+        el("dt", {}, "Buyer"), el("dd", {}, `${order.buyer.name} (${order.buyer.email})`),
+        el("dt", {}, "PayPal account"), el("dd", {}, `${order.buyer.account_status}, ${order.buyer.country}`),
+        el("dt", {}, "Ship to"), el("dd", {}, `${order.ship_to.name}, ${order.ship_to.address}`),
+        el("dt", {}, "Seller Protection"), el("dd", {},
+          PROTECTION[order.seller_protection] || order.seller_protection)));
+      detail.replaceChildren(...parts);
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/api/reviews");
+        if (!response.ok) throw new Error(response.status);
+        orders = (await response.json()).orders;
+        document.getElementById("note").textContent = "Sandbox shop. Refreshes every 10 seconds.";
+      } catch {
+        document.getElementById("note").textContent = "Could not load orders. Retrying.";
+        return;
+      }
+      if (!orders.some(o => o.order_id === selected)) selected = orders[0]?.order_id ?? null;
+      renderCounts();
+      renderRows();
+      renderDetail();
+    }
+
+    refresh();
+    setInterval(() => { if (!document.hidden) refresh(); }, 10000);
+  </script>
+</body>
+</html>

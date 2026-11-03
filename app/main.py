@@ -1,5 +1,5 @@
 """
-ShipSafe web app: the sandbox demo store and the PayPal webhook.
+ShipSafe web app: the sandbox demo store, the PayPal webhook and the seller's order queue.
 
 Each paid order is stored, checked by the signals, reviewed by the AI and decided by the
 policy, after the buyer has been answered. Field reports stay in the log until the webhook
@@ -58,6 +58,61 @@ def health() -> dict:
 @app.get("/")
 def storefront() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/seller")
+def seller_screen() -> FileResponse:
+    return FileResponse(STATIC_DIR / "seller.html")
+
+
+@app.get("/api/reviews")
+def list_reviews(limit: int = 50) -> dict:
+    """The seller's queue: the latest decided orders, newest first."""
+    queue = []
+    for saved in store.latest_reviews(max(1, min(limit, 200))):
+        order = store.get(saved["order_id"])
+        if order is not None:
+            queue.append(queue_entry(order, saved))
+    return {"orders": queue, "model": config.REVIEW_MODEL}
+
+
+def queue_entry(order: orders.PaidOrder, saved: dict) -> dict:
+    """
+    What the seller screen shows for one order. Names, emails, addresses and the AI's text are
+    shown as plain text by the page, never as HTML. The full transcript stays in the database.
+    """
+    record = saved["record"]
+    decision = record.get("decision", {})
+    result = record.get("review", {})
+    looked_at = [block["name"] for message in result.get("transcript", [])
+                 if message.get("role") == "assistant" and isinstance(message.get("content"), list)
+                 for block in message["content"]
+                 if block.get("type") == "tool_use" and block.get("name") != review.SUBMIT_TOOL]
+    return {
+        "order_id": order.order_id,
+        "reviewed_at": saved["created_at"],
+        "action": saved["action"],
+        "band": saved["band"],
+        "amount": f"{order.amount_cents / 100:.2f}",
+        "currency": order.currency,
+        "buyer": {"name": order.payer_name, "email": order.email, "country": order.buyer_country,
+                  "account_status": order.account_status},
+        "ship_to": {"name": order.ship_name, "address": order.ship_address,
+                    "country": order.ship_country},
+        "seller_protection": order.seller_protection,
+        "decision": {key: decision.get(key) for key in (
+            "reason", "rule_band", "model_band", "probability", "hold_above", "money_at_risk_cents")},
+        "signals": record.get("signals", []),
+        "review": {
+            "model": result.get("model"),
+            "explanation": result.get("explanation", ""),
+            "reasons": result.get("reasons", []),
+            # Only offered when ShipSafe decided to contact the buyer.
+            "buyer_message": result.get("buyer_message", "") if saved["action"] == "contact_buyer" else "",
+            "errors": result.get("errors", []),
+            "looked_at": list(dict.fromkeys(looked_at)),
+        },
+    }
 
 
 @app.get("/api/config")
