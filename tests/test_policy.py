@@ -74,3 +74,19 @@ def test_failed_review_holds_even_a_clean_cheap_order():
     decision = policy.decide(make_order(amount_cents=500), CLEAN, None)
     assert (decision.action, decision.model_band) == ("hold", None)
     assert "seller" in decision.reason
+
+
+def test_demo_items_on_the_shop_history(tmp_path):
+    """The demo relies on this: a clean buyer's backpack ships, the same buyer's tent is checked first."""
+    import json
+
+    from app import config, main, signals
+    from app.store import Store
+
+    store = Store(tmp_path / "shop.db")
+    now = 1_800_000_000.0
+    store.seed(json.loads(config.SHOP_HISTORY.read_text(encoding="utf-8")), now=now)
+    for sku, expected in (("DEMO-001", "ship"), ("DEMO-002", "contact_buyer")):
+        cents = round(float(main.ITEMS[sku]["price"]) * 100)
+        order = make_order(amount_cents=cents, created_at=now)
+        assert policy.decide(order, signals.build(order, store), "low").action == expected

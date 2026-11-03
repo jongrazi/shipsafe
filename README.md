@@ -40,7 +40,7 @@ You need Python 3.10 or later and a [PayPal sandbox app](https://developer.paypa
    .venv/Scripts/python -m uvicorn app.main:app --reload
    ```
 
-4. Open <http://localhost:8000> and buy the item with a sandbox personal account.
+4. Open <http://localhost:8000> and buy an item with a sandbox personal account. The $399 tent is well above the shop's usual order, so it is checked more carefully than the $149 backpack.
 5. Open <http://localhost:8000/seller> to see the order queue: each decision, the AI's explanation, the checks behind it and how the money at risk was weighed. It refreshes every 10 seconds.
 
 The seller screen has no login, so it is only for sandbox data. The server log prints a field report and the decision for the order. The full PayPal response is saved in `data/samples`, which git ignores.

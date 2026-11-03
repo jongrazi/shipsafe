@@ -20,6 +20,7 @@ import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from . import config, field_report, orders, policy, review, signals, webhooks
 from .paypal import PayPal, PayPalError
@@ -30,8 +31,12 @@ log = logging.getLogger("shipsafe")
 
 STATIC_DIR = Path(__file__).parent / "static"
 EVENT_ID = re.compile(r"^[A-Za-z0-9-]{1,64}$")
-# The price lives on the server, so a buyer's browser can't change it.
-DEMO_ITEM = {"name": "Trail Backpack", "sku": "DEMO-001", "price": "149.00"}
+# Prices live on the server, so a buyer's browser can't change them. The shop's past orders
+# are $39 to $149, so the tent is an unusually large order for it.
+ITEMS = {item["sku"]: item for item in (
+    {"name": "Trail Backpack", "sku": "DEMO-001", "price": "149.00"},
+    {"name": "Ultralight Tent", "sku": "DEMO-002", "price": "399.00"},
+)}
 
 paypal = PayPal(config.CLIENT_ID, config.CLIENT_SECRET)
 store: Store | None = None  # opened at startup
@@ -117,13 +122,20 @@ def queue_entry(order: orders.PaidOrder, saved: dict) -> dict:
 
 @app.get("/api/config")
 def store_config() -> dict:
-    return {"client_id": config.CLIENT_ID, "item": DEMO_ITEM}
+    return {"client_id": config.CLIENT_ID, "items": list(ITEMS.values())}
+
+
+class OrderRequest(BaseModel):
+    sku: str
 
 
 @app.post("/api/orders")
-def create_order() -> dict:
+def create_order(request: OrderRequest) -> dict:
+    item = ITEMS.get(request.sku)
+    if item is None:
+        raise HTTPException(400, "unknown item")
     try:
-        return {"id": paypal.create_order(DEMO_ITEM)["id"]}
+        return {"id": paypal.create_order(item)["id"]}
     except PayPalError as exc:
         log.error("create order: %s", exc)
         raise HTTPException(502, "PayPal could not create the order") from None

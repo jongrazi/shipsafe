@@ -108,14 +108,26 @@ def test_store_page_loads(client):
 
 
 def test_order_uses_the_server_price_whatever_the_browser_sends(client, fake):
-    response = client.post("/api/orders", json={"price": "0.01"})
+    response = client.post("/api/orders", json={"sku": "DEMO-002", "price": "0.01"})
     assert response.json() == {"id": "ORDER12345A"}
-    assert fake.created == [main.DEMO_ITEM]
+    assert fake.created == [main.ITEMS["DEMO-002"]]
+    assert fake.created[0]["price"] == "399.00"
+
+
+def test_unknown_item_is_refused(client, fake):
+    assert client.post("/api/orders", json={"sku": "FREE-STUFF"}).status_code == 400
+    assert client.post("/api/orders").status_code == 422
+    assert fake.created == []
+
+
+def test_config_lists_every_item(client):
+    items = client.get("/api/config").json()["items"]
+    assert [item["sku"] for item in items] == ["DEMO-001", "DEMO-002"]
 
 
 def test_paypal_failure_gives_a_plain_502(client, fake):
     fake.fail = True
-    response = client.post("/api/orders")
+    response = client.post("/api/orders", json={"sku": "DEMO-001"})
     assert response.status_code == 502
     assert "debug_id" not in response.text
 
