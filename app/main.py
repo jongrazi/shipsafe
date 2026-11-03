@@ -1,8 +1,9 @@
 """
 ShipSafe web app: the sandbox demo store and the PayPal webhook.
 
-Each paid order is stored and its risk signals are computed. The AI review is not built
-yet. Field reports stay in the log until the webhook path has been confirmed on PayPal.
+Each paid order is stored, checked by the signals, reviewed by the AI and decided by the
+policy, after the buyer has been answered. Field reports stay in the log until the webhook
+path has been confirmed on PayPal.
 """
 from __future__ import annotations
 
@@ -10,7 +11,9 @@ import json
 import logging
 import re
 import sqlite3
+import time
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 import requests
@@ -18,9 +21,9 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
-from . import config, field_report, orders, signals, webhooks
+from . import config, field_report, orders, policy, review, signals, webhooks
 from .paypal import PayPal, PayPalError
-from .store import Store
+from .store import DAY, Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("shipsafe")
@@ -32,6 +35,7 @@ DEMO_ITEM = {"name": "Trail Backpack", "sku": "DEMO-001", "price": "149.00"}
 
 paypal = PayPal(config.CLIENT_ID, config.CLIENT_SECRET)
 store: Store | None = None  # opened at startup
+claude = review.make_client()
 
 
 @asynccontextmanager
@@ -52,7 +56,7 @@ def health() -> dict:
 
 
 @app.get("/")
-def store() -> FileResponse:
+def storefront() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
@@ -71,7 +75,7 @@ def create_order() -> dict:
 
 
 @app.post("/api/orders/{order_id}/capture")
-def capture_order(order_id: str) -> dict:
+def capture_order(order_id: str, background: BackgroundTasks) -> dict:
     if not orders.PAYPAL_ID.match(order_id):
         raise HTTPException(400, "invalid order id")
     try:
@@ -83,7 +87,7 @@ def capture_order(order_id: str) -> dict:
     field_report.save_sample(config.SAMPLES_DIR, f"capture-{order_id}", capture, order)
     log.info("field report (capture response) %s: %s", order_id,
              json.dumps(field_report.build(capture, order)))
-    record_order(capture, order, "capture response")
+    background.add_task(record_order, capture, order, "capture response")  # the buyer mustn't wait
     return {"status": order.get("status")}
 
 
@@ -130,9 +134,8 @@ def report_capture(event: dict) -> None:
 
 def record_order(capture: dict, order: dict, via: str) -> None:
     """
-    Store a paid order and compute its signals, once per order: the capture response and
-    the webhook both report it. By now the buyer has paid, so a failure here is logged
-    rather than shown to them.
+    Store and review a paid order, once per order: the capture response and the webhook
+    both report it. By now the buyer has paid, so a failure here is logged, not shown to them.
     """
     paid = orders.from_paypal(capture, order)
     if paid is None:
@@ -142,8 +145,27 @@ def record_order(capture: dict, order: dict, via: str) -> None:
         if not store.add(paid):
             return
         found = signals.build(paid, store)
+        log.info("signals %s (%s): %s", paid.order_id, via,
+                 json.dumps({signal.name: signal.level for signal in found}))
+        result = run_review(paid, found)
+        decision = policy.decide(paid, found, result.band)
+        store.add_review(paid.order_id, decision.action, decision.band, {
+            "decision": asdict(decision),
+            "signals": [asdict(signal) for signal in found],
+            "review": asdict(result),
+        })
     except sqlite3.Error as exc:
         log.error("order %s not recorded: %s", paid.order_id, type(exc).__name__)
         return
-    log.info("signals %s (%s): %s", paid.order_id, via,
-             json.dumps({signal.name: signal.level for signal in found}))
+    log.info("decision %s: %s (band %s, rules %s, model %s, hold above %.0f%%)%s", paid.order_id,
+             decision.action, decision.band, decision.rule_band, decision.model_band,
+             decision.hold_above * 100, f" errors: {result.errors}" if result.errors else "")
+
+
+def run_review(paid: orders.PaidOrder, found: list[signals.Signal]) -> review.Review:
+    """The AI review, unless today's limit is used up: then no call, and the order is held."""
+    recent = store.reviews_since(time.time() - DAY)
+    if len(recent) >= config.DAILY_REVIEW_LIMIT:
+        return review.Review(model=config.REVIEW_MODEL, errors=[
+            f"daily limit of {config.DAILY_REVIEW_LIMIT} AI reviews reached"])
+    return review.run(paid, found, store, claude)

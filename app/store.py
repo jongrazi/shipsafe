@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE INDEX IF NOT EXISTS idx_orders_payer ON orders(payer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_orders_email ON orders(email, created_at);
 CREATE INDEX IF NOT EXISTS idx_orders_address ON orders(address_key, created_at);
+
+CREATE TABLE IF NOT EXISTS reviews (
+    order_id    TEXT PRIMARY KEY,
+    action      TEXT NOT NULL,   -- ship | contact_buyer | hold
+    band        TEXT NOT NULL,   -- final band, after the rules
+    created_at  REAL NOT NULL,   -- epoch s
+    record      TEXT NOT NULL    -- JSON: everything behind the decision, for audit
+);
 """
 DAY = 86400  # seconds
 
@@ -92,6 +100,31 @@ class Store:
         with self._db() as db:
             return db.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
 
+    def add_review(self, order_id: str, action: str, band: str, record: dict,
+                   now: float | None = None) -> bool:
+        """Store a review. Each order gets one, so a rerun can't rewrite what was decided."""
+        now = time.time() if now is None else now
+        with self._db() as db:
+            return db.execute("INSERT OR IGNORE INTO reviews VALUES (?,?,?,?,?)",
+                              (order_id, action, band, now, json.dumps(record))).rowcount == 1
+
+    def get_review(self, order_id: str) -> dict | None:
+        with self._db() as db:
+            row = db.execute("SELECT * FROM reviews WHERE order_id = ?", (order_id,)).fetchone()
+        return _to_review(row) if row else None
+
+    def reviews_since(self, since: float) -> list[dict]:
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM reviews WHERE created_at >= ? ORDER BY created_at",
+                              (since,)).fetchall()
+        return [_to_review(row) for row in rows]
+
+    def latest_reviews(self, limit: int = 10) -> list[dict]:
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM reviews ORDER BY created_at DESC LIMIT ?",
+                              (limit,)).fetchall()
+        return [_to_review(row) for row in rows]
+
     # ── history, always from before the order under review ─────────────
     def buyer_orders(self, order: PaidOrder) -> list[PaidOrder]:
         """Earlier orders from the same PayPal account or email, newest first."""
@@ -107,6 +140,10 @@ class Store:
         amounts = [o.amount_cents for o in self._earlier(order, "currency = ?", (order.currency,))]
         return len(amounts), statistics.median(amounts) if amounts else 0.0
 
+    def country_order_count(self, order: PaidOrder) -> int:
+        """How many earlier orders shipped to this order's country."""
+        return len(self._earlier(order, "ship_country = ?", (order.ship_country,)))
+
     def _earlier(self, order: PaidOrder, condition: str, params: tuple) -> list[PaidOrder]:
         query = (f"SELECT * FROM orders WHERE {condition} AND created_at < ? AND order_id != ? "
                  "ORDER BY created_at DESC")
@@ -120,3 +157,7 @@ def _to_order(row: sqlite3.Row) -> PaidOrder:
     fields["protection_categories"] = tuple(json.loads(fields["protection_categories"]))
     fields["disputed"] = bool(fields["disputed"])
     return PaidOrder(**fields)
+
+
+def _to_review(row: sqlite3.Row) -> dict:
+    return {**dict(row), "record": json.loads(row["record"])}

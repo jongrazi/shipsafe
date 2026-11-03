@@ -65,6 +65,38 @@ def test_baseline_is_the_median_of_earlier_orders_in_this_currency(store):
     assert store.shop_baseline(BASE_ORDER) == (3, 2000)
 
 
+def test_country_count_only_sees_earlier_orders_to_that_country(store):
+    store.add(other_buyer(1, 1))
+    store.add(other_buyer(2, 1, ship_country="US"))
+    store.add(make_order(order_id="LATER123456", capture_id="LATERCAP", created_at=NOW + 60))
+    assert store.country_order_count(BASE_ORDER) == 1
+
+
+def test_review_survives_a_round_trip(store):
+    assert store.add_review("ORDER1", "hold", "high", {"decision": {"reason": "test"}}, now=NOW)
+    saved = store.get_review("ORDER1")
+    assert (saved["action"], saved["band"]) == ("hold", "high")
+    assert saved["record"] == {"decision": {"reason": "test"}}
+
+
+def test_a_stored_review_cannot_be_rewritten(store):
+    store.add_review("ORDER1", "hold", "high", {}, now=NOW)
+    assert not store.add_review("ORDER1", "ship", "low", {}, now=NOW)
+    assert store.get_review("ORDER1")["action"] == "hold"
+
+
+def test_reviews_since_skips_older_reviews(store):
+    store.add_review("OLD", "ship", "low", {}, now=NOW - 90000)
+    store.add_review("NEW", "hold", "high", {}, now=NOW)
+    assert [item["order_id"] for item in store.reviews_since(NOW - 86400)] == ["NEW"]
+
+
+def test_latest_reviews_come_newest_first(store):
+    store.add_review("OLD", "ship", "low", {}, now=NOW)
+    store.add_review("NEW", "hold", "high", {}, now=NOW + 60)
+    assert [item["order_id"] for item in store.latest_reviews()] == ["NEW", "OLD"]
+
+
 def test_seeding_twice_adds_nothing_new(store):
     rows = build_rows()[:5]
     assert store.seed(rows, now=NOW) == 5

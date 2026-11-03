@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, field_report, main, webhooks
+from app import config, field_report, main, review, webhooks
 from app.paypal import PayPalError
 from app.store import Store
 from tests.helpers import CAPTURE, ORDER
@@ -50,6 +51,7 @@ def fake(monkeypatch, tmp_path):
     fake = FakePayPal()
     monkeypatch.setattr(main, "paypal", fake)
     monkeypatch.setattr(main, "store", Store(tmp_path / "test.db"))
+    monkeypatch.setattr(main, "claude", None)  # a local .env key must never reach the real API
     monkeypatch.setattr(config, "SAMPLES_DIR", tmp_path / "samples")
     return fake
 
@@ -127,6 +129,58 @@ def test_capture_saves_sample_and_returns_only_the_status(client, fake):
 def test_capture_stores_the_order(client, fake):
     client.post("/api/orders/ORDER12345A/capture")
     assert main.store.get("ORDER12345A").amount_cents == 14900
+
+
+def test_paid_order_without_ai_key_is_held_for_the_seller(client, fake):
+    client.post("/api/orders/ORDER12345A/capture")
+    saved = main.store.get_review("ORDER12345A")
+    assert saved["action"] == "hold"
+    assert saved["record"]["review"]["errors"] == ["ANTHROPIC_API_KEY is not set"]
+
+
+def test_review_record_keeps_what_was_behind_the_decision(client, fake):
+    client.post("/api/orders/ORDER12345A/capture")
+    record = main.store.get_review("ORDER12345A")["record"]
+    assert record["decision"]["model_band"] is None
+    assert {signal["name"] for signal in record["signals"]} >= {"seller_protection", "order_value"}
+
+
+def test_ai_review_is_used_when_available(client, fake, monkeypatch):
+    def approve(_order, _found, _store, _client):
+        return review.Review(model="test", band="low", reasons=["Fine"], explanation="Fine.")
+
+    monkeypatch.setattr(review, "run", approve)
+    client.post("/api/orders/ORDER12345A/capture")
+    saved = main.store.get_review("ORDER12345A")
+    assert saved["action"] == "ship"
+    assert saved["record"]["review"]["explanation"] == "Fine."
+
+
+def test_daily_limit_holds_orders_without_calling_claude(client, fake, monkeypatch):
+    def must_not_run(*_args):
+        raise AssertionError("Claude was called past the daily limit")
+
+    monkeypatch.setattr(review, "run", must_not_run)
+    monkeypatch.setattr(config, "DAILY_REVIEW_LIMIT", 1)
+    main.store.add_review("EARLIER", "ship", "low", {})
+    client.post("/api/orders/ORDER12345A/capture")
+    saved = main.store.get_review("ORDER12345A")
+    assert saved["action"] == "hold"
+    assert "daily limit" in saved["record"]["review"]["errors"][0]
+
+
+def test_reviews_older_than_a_day_do_not_count_toward_the_limit(client, fake, monkeypatch):
+    calls = []
+
+    def approve(*args):
+        calls.append(args)
+        return review.Review(model="test", band="low", reasons=["Fine"], explanation="Fine.")
+
+    monkeypatch.setattr(review, "run", approve)
+    monkeypatch.setattr(config, "DAILY_REVIEW_LIMIT", 1)
+    main.store.add_review("YESTERDAY", "ship", "low", {}, now=time.time() - 90000)
+    client.post("/api/orders/ORDER12345A/capture")
+    assert len(calls) == 1
 
 
 def test_store_failure_does_not_fail_a_buyer_who_has_paid(client, fake, monkeypatch):

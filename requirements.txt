@@ -4,5 +4,6 @@ uvicorn>=0.30.0          # server
 requests>=2.31.0         # PayPal REST calls
 python-dotenv>=1.0.0     # loads .env
 cryptography>=42.0.0     # checks PayPal webhook signatures
+anthropic>=1.6.0         # the AI review
 pytest>=8.0              # tests
 httpx2                   # FastAPI test client

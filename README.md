@@ -6,7 +6,16 @@ Built for the PayPal AI Hackathon. This prototype runs only on the PayPal sandbo
 
 ## Status
 
-Early build. The demo store, PayPal order flow and verified webhook are in place. Each paid order is stored and gets a set of rule-based risk signals. The AI review is not built yet.
+Early build. The seller screen and seller-approved actions are not built yet.
+
+## How a review works
+
+1. A paid order is stored and checked by rule-based signals, in plain code.
+2. Claude investigates the order with read-only tools and proposes a risk band. It can't act, and its tools only reach the order under review.
+3. Plain code makes the decision. The rules set a minimum band that Claude can only raise, and the order is held only if the money at risk justifies a delay.
+4. If the review fails for any reason, the order is held for the seller.
+
+Names, emails and addresses are written by buyers, so they are treated as untrusted data. Every decision is saved with the signals and the full model transcript.
 
 The shop's order history in `fixtures/shop_history.json` is synthetic, so that a new install has something to compare orders against. `scripts/make_shop_history.py` regenerates it.
 
@@ -33,7 +42,13 @@ You need Python 3.10 or later and a [PayPal sandbox app](https://developer.paypa
 
 4. Open <http://localhost:8000> and buy the item with a sandbox personal account.
 
-The server log prints a field report for the order. The full PayPal response is saved in `data/samples`, which git ignores.
+The server log prints a field report and the decision for the order. The full PayPal response is saved in `data/samples`, which git ignores.
+
+To run the AI review, add `ANTHROPIC_API_KEY` to `.env` and restart the app. Without it, every order is held for the seller. To read the latest reviews:
+
+```bash
+.venv/Scripts/python scripts/show_reviews.py
+```
 
 ## Receive webhooks
 
